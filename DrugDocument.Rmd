@@ -1,0 +1,235 @@
+---
+title: "Nexium"
+author: "Ben Davies"
+date: "15 July 2015"
+output: word_document
+---
+```{r Actual_Calxulations, include=FALSE}
+setwd("~/Downloads")
+library(data.table)
+#The fread Function is by far the fastest function beating ff and read.table (which never finished) 
+colclassesvector= c("numeric", "character", "character", "character", "character", "character", "character", "character", "character", "character", "numeric", "numeric", "numeric", "numeric", "character", "numeric", "character", "numeric", "numeric")
+Drug.data <- fread("PARTD_PRESCRIBER_PUF_NPI_DRUG_13.tab", sep ="\t", verbose=TRUE, colClasses= colclassesvector)
+
+#### SELECT PROTON PUMP INHIBITORS gs.com/drug-class/proton-pump-inhibitors.html?condition_id=&generic=1&sort=rating&order=desc
+Segemented.Drug.data <- Drug.data[ GENERIC_NAME ==c("ESOMEPRAZOLE MAGNESIUM", "OMEPRAZOLE", "RABERPRAZOLE","PANTOPRAZOLE", "LANSOPRAZOLE", "DEXLANSOPRAZOLE") ]
+remove(Drug.data)
+#####Total Sales by Drug Name
+Sales.Info<-Segemented.Drug.data[, .(TotalCost=(sum(TOTAL_DRUG_COST)), TotalCostperDay=(sum(TOTAL_DRUG_COST)/sum(TOTAL_DAY_SUPPLY)), Total_Day_Supply = sum(TOTAL_DAY_SUPPLY)) , by= DRUG_NAME]
+
+#####Nexium is 17x the Price
+#####Select Nexium and Generic Omeprazoil
+Nexium.vs.OMEPRAZOLE <- Segemented.Drug.data[GENERIC_NAME ==c("ESOMEPRAZOLE MAGNESIUM", "OMEPRAZOLE")]
+
+#### by each NPI Number Sum the Total Days Supply of Nexium and OMEPRAZOLE
+Nexium.vs.OMEPRAZOLEExtracolum <- Nexium.vs.OMEPRAZOLE[, .(CombinedSupply= sum(TOTAL_DAY_SUPPLY), NPI,  NPPES_PROVIDER_LAST_ORG_NAME,  NPPES_PROVIDER_FIRST_NAME,  NPPES_PROVIDER_CITY,	NPPES_PROVIDER_STATE,	SPECIALTY_DESC, DRUG_NAME, TOTAL_DAY_SUPPLY,  TOTAL_DRUG_COST)   , by =NPI ]
+###SelectonlyColums Containing Nexium (or Omeprazole either or)
+NexiumOnly <- Nexium.vs.OMEPRAZOLEExtracolum[ DRUG_NAME == "NEXIUM",]
+##### Add Colum with the Ratio of Nexium Prescribed (By Days of Prescription) to Nexium+OMEPRAZOLE
+NexiumOnly <- NexiumOnly[ , .(NPI,  NPPES_PROVIDER_LAST_ORG_NAME,  NPPES_PROVIDER_FIRST_NAME,  NPPES_PROVIDER_CITY,	NPPES_PROVIDER_STATE,	SPECIALTY_DESC, DRUG_NAME, TOTAL_DAY_SUPPLY, CombinedSupply,TOTAL_DRUG_COST, NEXIUM_RATIO= (TOTAL_DAY_SUPPLY/CombinedSupply)) ]
+
+
+####CostSavedifTotalyGeneric
+Mean.Nexium.Ratio<- NexiumOnly[, mean(NEXIUM_RATIO)]
+Total.Sales <- Nexium.vs.OMEPRAZOLE[, sum(TOTAL_DRUG_COST)]
+Total.Sales.if.OMEPRAZOLE <- Nexium.vs.OMEPRAZOLE[, sum(TOTAL_DAY_SUPPLY)]*Sales.Info[DRUG_NAME == "OMEPRAZOLE", TotalCostperDay ]
+Ratio.of.Reduction.if.OMEPRAZOLE <-Total.Sales.if.OMEPRAZOLE/Total.Sales
+Total.Savings.to.Goverment <- Total.Sales- Total.Sales.if.OMEPRAZOLE
+
+#### BrandConcienseDoctors- Proscribe Mostly Nexium
+BrandConciousList <- NexiumOnly[ NEXIUM_RATIO >= .95 ]
+#### BrandBlindDoctors- Proscribe Mostly OMEPRAZOLE 
+BrandBlindList <- NexiumOnly[ NEXIUM_RATIO <= .05 ]
+#### Doctors by State
+BrandsbyState <- NexiumOnly[ , .(Nexium.Ratio = mean(NEXIUM_RATIO)) , by = NPPES_PROVIDER_STATE  ]
+BrandsbyState <- BrandsbyState[order(Nexium.Ratio)]
+#####
+```
+```{r, PBSComparison , include=FALSE}
+setwd("~/Downloads")
+library(data.table)
+library(ggplot2)
+#The fread Function is by far the fastest function beating ff and read.table (which never finished) 
+colclassesvector= c("numeric", "character", "character", "character", "character", "character", "character", "character", "character", "character", "numeric", "numeric", "numeric", "numeric", "character", "numeric", "character", "numeric", "numeric")
+Drug.data <- fread("PARTD_PRESCRIBER_PUF_NPI_DRUG_13.tab", sep ="\t", verbose=TRUE, colClasses= colclassesvector)
+##PBS Cost File
+PBS.Data <-read.table("PBSdata.csv", stringsAsFactors=FALSE, sep=",", header=TRUE)
+PBS.Data <- data.table(PBS.Data)
+#Internal Variation of Drug Price
+Subsetted.Drug.Data <- Drug.data[ , .(NPI, DRUG_NAME, NPPES_PROVIDER_LAST_ORG_NAME, NPPES_PROVIDER_FIRST_NAME, SPECIALTY_DESC, TOTAL_CLAIM_COUNT, TOTAL_DAY_SUPPLY, TOTAL_DRUG_COST)]
+remove(Drug.data)
+
+#Average Cost by Drug Names
+CostbyBrand <- Subsetted.Drug.Data[ , .(TotalCost=(sum(TOTAL_DRUG_COST)), TotalCostperDay=(sum(TOTAL_DRUG_COST)/sum(TOTAL_DAY_SUPPLY)), Total_Day_Supply = sum(TOTAL_DAY_SUPPLY)) , by= DRUG_NAME]
+CostbyBrandOrderedperDay <- CostbyBrand[order(-TotalCost)]
+remove(CostbyBrand)
+OrderedDrugnamelist <- CostbyBrandOrderedperDay[,DRUG_NAME]
+
+#### PBS Comparison Section
+###Load Data
+PBS.Dataset <-read.csv("July4AMMENDEDPBSfixedData20131201.csv", header=T, sep= ',', stringsAsFactors = FALSE)
+PBS.Dataset<- data.table(PBS.Dataset)
+####Drugs to Compare to PBS
+ListofDrugs <- CostbyBrandOrderedperDay[,DRUG_NAME]
+PBSComparison <- data.frame("Drug Name"= character(), "PBSComparisonPrice"= numeric(), "Medicare_per_Unit_Cost"= numeric(), "Total_Day_Supply"= numeric(), "Company"= character(), stringsAsFactors= FALSE)
+### Setkey needed, don't know why but Fuck Up Later Calcs in the extra Variable
+InternalCostbyBrandOrderedperDay <- CostbyBrandOrderedperDay
+setkey(InternalCostbyBrandOrderedperDay)
+####Run Loop to Get PBS Max Price per Day
+for (j in 1:50){
+  ListofDrugs[j] 
+  ### To be Conservative this Function finds the Most Expensive Form (i.e Highest Dosage)
+  Result <- PBS.Dataset[ grep(ListofDrugs[j], Trade.Product.Pack.Info, ignore.case=TRUE ), ]
+  Manufacturer.Name.in.code <- Result[1, Manufacturer.Code] ###Assumes Manufactuer is the Same for Each Brand
+  ### This is because Medicare Pricing Data is an Average so it is a Conservative Assumption
+  PriceofLargestDosage <- Result[, max(Cost_per_UOM)]
+  newrow2 <- c(ListofDrugs[j], PriceofLargestDosage, InternalCostbyBrandOrderedperDay[ListofDrugs[j],TotalCostperDay], InternalCostbyBrandOrderedperDay[ListofDrugs[j],Total_Day_Supply], Manufacturer.Name.in.code)
+  rowcounter <- nrow(PBSComparison)+1
+  PBSComparison[rowcounter,] <- newrow2
+}
+####PBSComparisonGivesAveragePricesperDay from both Medicare and PBS
+####PBS Data is converted to cost per day by assuming that Largest Dose (i.e Dose in a Pill) that Can be Purchased is the Maximum Daily Rate; this is has been found to be True for the Top Ten Sellers by using drugs.com.
+####Some Big Sellers were not Found on the PBS
+####PBS prices are in AUD; 1USD to 1.03 AUD 
+###Make PBSComparison a Data.Table
+PBSComparison <- data.table(PBSComparison)
+#Intialize Final Report
+FinalDrugCostLedger <- data.frame("Drug Name"= character(), "Total Sales"= numeric(), "Total Days Supply"= numeric(), "Cost per Day USA"= numeric(),"Cost per Day Aus"= numeric(), "PercentageofWaste"= numeric() ,stringsAsFactors= FALSE)
+
+# Individual Records of Drugs by Cost
+CostperDose <- Subsetted.Drug.Data[,.(NPI, DRUG_NAME, NPPES_PROVIDER_LAST_ORG_NAME, NPPES_PROVIDER_FIRST_NAME, SPECIALTY_DESC, TOTAL_CLAIM_COUNT, TOTAL_DAY_SUPPLY, TOTAL_DRUG_COST, CostperDose= (TOTAL_DRUG_COST/TOTAL_DAY_SUPPLY))]
+#For Loop- Returns Drug Level Data by Parsing Every Single Row
+i=1
+for (i in 1:50){
+  Drugname <- ListofDrugs[i]
+  ###Annonying Setkey Programming
+  key(CostperDose)
+  setkey(CostperDose)
+  key(CostperDose)
+  ###For a Given Drug Returns Cost information for each Subscribing Doctor on a Cost per Dose Basis
+  SingleDrugCostperDose <- CostperDose[ DRUG_NAME %in% c(Drugname), .(NPI, DRUG_NAME, NPPES_PROVIDER_LAST_ORG_NAME, NPPES_PROVIDER_FIRST_NAME, SPECIALTY_DESC, TOTAL_CLAIM_COUNT, TOTAL_DAY_SUPPLY, TOTAL_DRUG_COST, CostperDose= (TOTAL_DRUG_COST/TOTAL_DAY_SUPPLY))] 
+  ###Total Sales for a Given Drug (A Single Number)
+  SingleDrugCostTotalCost <- SingleDrugCostperDose[, sum(TOTAL_DRUG_COST) ]
+  #Set Index, maybe Unneccasary
+  setkey(SingleDrugCostperDose)
+  ### Criteria to Judge Overcharging (Either 3 Standard Deviations or PBS Price)
+  OverChargingThreshold <- PBSComparison[ Drug.Name %in% c(Drugname), PBSComparisonPrice ] ###Retrive the SingleDrugCostperDose
+  OverChargingThreshold <- as.numeric(OverChargingThreshold)
+  #Create a Colum to Test if the Value of SingleDrugCostperDose is Larger than Criteria 
+  ListofOverChargers <- SingleDrugCostperDose[, .(NPI, DRUG_NAME, NPPES_PROVIDER_LAST_ORG_NAME, NPPES_PROVIDER_FIRST_NAME, SPECIALTY_DESC, TOTAL_CLAIM_COUNT, TOTAL_DAY_SUPPLY, TOTAL_DRUG_COST, Costperdose= TOTAL_DRUG_COST/TOTAL_DAY_SUPPLY, OverCharging= (CostperDose > OverChargingThreshold))]
+  setkey(ListofOverChargers)  #Set Index, maybe Unneccasary
+  
+  # Exported Values
+  Total_Sales<- ListofOverChargers[, mean(Costperdose)]*ListofOverChargers[, sum(TOTAL_DAY_SUPPLY)]
+  Total_Days_Supply <- ListofOverChargers[, sum(TOTAL_DAY_SUPPLY)]
+  Cost.per.Dose.USA <- ListofOverChargers[, mean(Costperdose)]
+  setkey(PBSComparison)
+  Cost.per.Dose.Aus <- PBSComparison[Drugname, PBSComparisonPrice]
+  PercentageofWastetoSales<- (as.numeric(Total_Days_Supply)* as.numeric(Cost.per.Dose.Aus)/as.numeric(Total_Sales))
+  
+  #Store Results of All Drugs
+  newrow <- data.frame(Drugname, Total_Sales, Total_Days_Supply, Cost.per.Dose.USA, Cost.per.Dose.Aus, PercentageofWastetoSales)
+  FinalDrugCostLedger= rbind(FinalDrugCostLedger, newrow)
+}
+
+### Keep as data.frame (data.table throws errors), convert to numeric for Further Analysis, back to Datat.Table
+FinalDrugCostLedger[,2:4]<- sapply(FinalDrugCostLedger[,2:4], as.numeric) ###Are the Colums to be Converted 
+CompleteFinalDrugCostLedger <- FinalDrugCostLedger
+sapply(FinalDrugCostLedger, class)
+sum(FinalDrugCostLedger[,2])
+FinalDrugCostLedger <- data.table(FinalDrugCostLedger)
+data.frame(FinalDrugCostLedger)
+FinalDrugCostLedger <- FinalDrugCostLedger[ -grep("Inf", PercentageofWastetoSales, ignore.case=TRUE ),]
+### Analysis
+Top50Sales<- FinalDrugCostLedger[, sum(Total_Sales)]
+CostMutlipleMedian <- 1/median(FinalDrugCostLedger$PercentageofWaste)
+CostMutlipleMean <- 1/mean(FinalDrugCostLedger$PercentageofWaste)
+FinalDrugCostLedger <- data.frame(FinalDrugCostLedger)
+####Must Convert to Numeric from Factor- Thus First to Character then to Numeric
+FinalDrugCostLedger$AUS.SALES<- as.numeric(as.character(FinalDrugCostLedger$Total_Days_Supply))*as.numeric(as.character(FinalDrugCostLedger$Cost.per.Dose.Aus))
+FinalDrugCostLedger$USA.SALES<- as.numeric(as.character(FinalDrugCostLedger$Total_Days_Supply))*as.numeric(as.character(FinalDrugCostLedger$Cost.per.Dose.USA))
+####Manipulate Data into Pyramid Plot Format
+USA.Sales.Data<- data.frame(FinalDrugCostLedger$Drugname,c(rep("USA", nrow(FinalDrugCostLedger))), FinalDrugCostLedger$USA.SALES)
+AUS.Sales.Data<- data.frame(FinalDrugCostLedger$Drugname,c(rep("Australia", nrow(FinalDrugCostLedger))), FinalDrugCostLedger$AUS.SALES)
+```
+
+In 2003 Thomas Scully, administrator of the federal Centers for Medicare and Medicaid Services, told delegates at a American Medical Assoication confrence "You should be embarrassed if you prescribe Nexium," because it increases costs with no medical benefits. Recently released Medicare Part D billing data showed that doctors should be embarrased because they cost the govement $`r Sales.Info[DRUG_NAME=="NEXIUM", TotalCost]-Nexium.vs.OMEPRAZOLE[DRUG_NAME=="NEXIUM",sum(TOTAL_DAY_SUPPLY)]*Sales.Info[DRUG_NAME=="OMEPRAZOLE", TotalCostperDay]` by proscribing nexium instead of omeprazole. Nexium is however emblematic of a systemic problem; the huge profits available to well marketed and compariticley low “me too” drugs create disincentives to develop truly novel therapeutics but risky theraputics.  
+
+Nexium, used to treat heartburn, is the most billed drug in Medicare Part D with sales 0f $`r Sales.Info[DRUG_NAME=="NEXIUM", TotalCost]`. It is also a waste of money because Omeprazole  contains the same active ingredient as Nexium but costs `r Sales.Info[DRUG_NAME=="NEXIUM", TotalCostperDay]/Sales.Info[DRUG_NAME=="OMEPRAZOLE", TotalCostperDay]` times as much per day as  
+Omeprazole. This cost the American goverment `r Sales.Info[DRUG_NAME=="NEXIUM", TotalCost]-Nexium.vs.OMEPRAZOLE[DRUG_NAME=="NEXIUM",sum(TOTAL_DAY_SUPPLY)]*Sales.Info[DRUG_NAME=="OMEPRAZOLE", TotalCostperDay]`. This result is significant because previous research has shown that Medicare Part D works reasonabley well in controlling the price of drugs with generic or branded competion, such as nexium, it is ineffective at effecting proscription patterns. This means that substantial profits can be gained by rational drug companies without any real innovation.
+
+Although Nexium is a particularly eggregious example, this level of undeniable waste does not appear in other advanced countries. Australia is a culturally and economically similiar country with a "small" goverment. Like America Australia's healthcare system includes large private sector involvment and is therefore a good comparison. We note that Australia does not get the best prices; New Zealand, Ireland, France, Sweden, Belgium, and Austria all recieve better prices than Australia according to the Grattan Institute.
+```{r pyramid_plot, echo=FALSE}
+setwd("~/Downloads")
+library(pyramid)
+library(plotrix)
+##### Remove Outlier
+USA.Sales.Data <- USA.Sales.Data[ !USA.Sales.Data$FinalDrugCostLedger.Drugname == "INVEGA SUSTENNA",]
+AUS.Sales.Data <- AUS.Sales.Data[ !AUS.Sales.Data$FinalDrugCostLedger.Drugname == "INVEGA SUSTENNA",]
+#### Plot Graph
+pyramid.plot(USA.Sales.Data$FinalDrugCostLedger.USA.SALES*.000000001, 
+             AUS.Sales.Data$FinalDrugCostLedger.AUS.SALES*.000000001, 
+             USA.Sales.Data$FinalDrugCostLedger.Drugname,
+             gap=.8,
+             labelcex=1,
+             top.labels= c("USA", "Drug Names", "Australia"),
+             space=.5,
+             show.values=TRUE,
+             mtext("American Prescription Drugs, why so much?",3,2,cex=3),
+             unit= "Drug Sales in Billions ($)"
+             )
+
+```
+We compare the top 50 drugs (of 2738) billed to Medicare Part D, 42 of which can be matched to prices provided by the Australian Pharmaceutical Benfits Scheme public pricing information. These 42 drugs account for `r sum(USA.Sales.Data$FinalDrugCostLedger.USA.SALES)` of for `r 100*sum(USA.Sales.Data$FinalDrugCostLedger.USA.SALES)/sum(CostbyBrandOrderedperDay$TotalCost)`% of total Medicare Part D billing. For the chosen 42 drugs America pays $`r USA.Data[,sum(Total.Drug.Cost)]` while Australia would pay $`r AUS.Data[,sum(Total.Drug.Cost)]`. This means `r USA.Data[,sum(Total.Drug.Cost)]/AUS.Data[,sum(Total.Drug.Cost)]` times more than Australia with median cost multiple of `r CostMutlipleMedian`. Considering only these 42 drugs this amounts to an overspend of $`r USA.Data[,sum(Total.Drug.Cost)]-AUS.Data[,sum(Total.Drug.Cost)]`.
+
+Are Australians smarter? Handsome maybe, but crticially they allow the goverment to negotiate directly with drug companies to get a better deal. When your such a big customer, you get a better deal. This is known to be true in America as well, Lakdawalla and Yin found that for every 100,000 extra insured under Medicare Part D a 2.5% reduction in drug prices was acheived. In a subsequent paper they found that such bargainaing power benefited individuals who were not enrolled in Medicare Part D but were beneficiaries of insurer that also offered Medicare Part D insurance by a 3.7% decinline in drug prices. This is a critical benefit of centralized negiotation; tough bargaining by Medicare Part D would serve as a basis for getting better prices across the entire insurance industry.  
+
+Medicare however is forbidden, by legislation, from negotiating prices. The Department of Veterans Affairs, Medicaid, and private health insurers are, however, allowed to negoiate directly with drug companies. In fact, though I couldn't find a information on prices Medicaid and the VA pay for drugs USA Today reports "Medicaid's practice of setting minimum discounts, and bargaining for more, yields savings three times bigger than the ones private insurers get for Medicare Part D". An argument often used against allowing Medicare to negotiaite directly is that it disorts market forces; this is flawed because Medicaid, the VA, and private health insurers already negotiate directly the fear is Medicare Part D might just do it better. In fact the importance of size in negotiating directly with drug companies is so overwhelming and widespread, that as reported by the Chicago Tribune, that health insurers are merging to gain bargaining power with drug companies. The problem is getting worse, according to Truveris a marketing research company, prescription drug prices rose 11% in 2014.
+
+Drug companies, for their part, argue that cuts to drug prices will reduce their profits (who cares?), R&D expenditure, and hence the development of lifesaving drugs (everyones concern). The costs of bringing drugs to market are undeniabley huge, in the order of hundreds of millions of dollars, and so the return of succesful drugs needs to be greater than the investment.
+However that arugment profits=innovations is misleading because profits are not aligned in a 1:1 way with R&D investment nor are profits allgined directly with novel drugs. In fact the UK drug industry, for example, has lower drug prices than USA but spends a greater proportion of GDP on pharmaceutical R&D. 
+
+The key to lowering cost and developing new medicines is alligning financial returns more directly with the development of novel drugs and not "me too" drugs.
+
+1. Most drugs on the market are minor variation on existing chemicals, Nexium is a case in point, that are heavily marketed and sold at a huge premium over cheaper alternatives because doctors believe the advertising. Advertising really works; 9314 doctors proscribe >95% of doses as Nexium despite the Centers for Medicare and Medicaid Services stating "You should be embarrassed if you prescribe Nexium". These 9314 doctors alone if they proscribed omeprazole instead of nexium would have saved medicare and the taxpayer $`r (BrandConciousList[,sum(TOTAL_DAY_SUPPLY  )]*Sales.Info[DRUG_NAME=="NEXIUM", TotalCostperDay])-(BrandConciousList[,sum(TOTAL_DAY_SUPPLY  )])*Sales.Info[DRUG_NAME=="OMEPRAZOLE", TotalCostperDay]` in 2013.
+  a.   Money is a great measure of priorities; 1.3% of drug company revenue is spent on basic research vs. 25% revenue is spent on marketing. Marketing could be cut and R&D preserved with minimal effect on profit.
+2.    In terms of the cost of basic research needed to develop new drugs the goverment is the major contributor, a study of HIV drugs found private companies invested $2 Billion and the US goverment spent close to $10 billion.
+  a.  The National Institue of Health's (NIH) annual budget is $31.3 Billion compared to $`r USA.Data[,sum(Total.Drug.Cost)]-AUS.Data[,sum(Total.Drug.Cost)]` we would save if we payed Australian Prices. In theory all of that money could be added to the NIH the increased funding of which is a bipartisan goal.
+  b. Corporate R&D is subsidsized by goverment tax breaks. R&D costs are 100% tax deductable this means, economically speaking, that corporate pharmaceutical research is subsidized 39% by the taxpayer. Put simply if $1 was not spent on corporate R&D then because of taxes levied on corporate profits only $.61 end up as profit.
+
+4.  A major reason that drug companies focus on "me too" drugs is that in the absence of meaningful negiotations over drug prices and the ability affect proscription pattern through formularies their is a strong incentive produce similiar drug and market them heavily. Marketing pays, as doctors prosciption decision are clearly influenced by marketing. For example Medicare Part D records show their are 9314 doctors in America who proscribe >95% nexium which is no clinically no different than Omeprazole but costs `r Sales.Info[DRUG_NAME=="NEXIUM", TotalCostperDay]/Sales.Info[DRUG_NAME=="OMEPRAZOLE", TotalCostperDay]` times as much. This  reduces the incentive to invest in truly innovative drugs because the differntial payoff between innovative and "me too"" drugs is reduced. In practise this effect is so significant  that increased financial risk of developing novel drugs compared to "me tooe" drugs reduces the incentive to develop them; remember only 10-15% of drugs are classed as "important theraputic innovations". 
+
+Importantly centralized negotiations are only effective at lowering prices when alternative drugs exist; this means that centralized negiotations provide more of an incentive for novel research. For example Revlimid costs the same in America and Australia (refer to the pyramid plot). Why? Revlimid at the time was the only immunomodulatory drug on the market for the treatment of multiple myeloma. As a consequence Australia had no leverage in negoitations so paid full price; the drug was hugely profitiable as novel drugs should be. Increasing the relative payoff for truly novel drugs compared to "me too" drugs, as occurs in a centralized negotiation system, acutally better aligns financial incentives with the aim of developing truly novel drugs. The current system rewards marketing over innovation.
+
+For Example:
+Me Too
+Devleopment Cost*%Fail vs Sales
+Novel Drugs
+
+
+Concolusion:
+The current Medicare Part D billings data indicates that 
+
+
+
+
+
+*Comparison Could not be made with 8 of the Top 50 Drugs by Sales
+
+http://grattan.edu.au/wp-content/uploads/2014/04/Australia_s_Bad_Drug_Deal_-_Presentations_public_version190313.pdf
+http://scienceblogs.com/denialism/2012/01/09/why-no-one-should-take-nexium/
+http://www.usatoday.com/story/opinion/2014/04/20/medicare-part-d-prescription-drug-prices-negotiate-editorials-debates/7943745/
+
+Should Drug Prices Be Negotiated Under Part D Of Medicare? And If So, How?
+
+
+http://www.chicagotribune.com/business/chi-united-catamaran-merger-20150331-story.html
+http://www.washingtonpost.com/blogs/wonkblog/wp/2015/07/06/more-competition-is-supposed-to-help-consumers-that-might-not-be-true-with-health-insurance/
+http://www.washingtonpost.com/national/health-science/medicare-spent-45-billion-on-new-hepatitis-c-drugs-last-year-data-shows/2015/03/29/66952dde-d32a-11e4-a62f-ee745911a4ff_story.html?tid=HP_lede?tid=HP_lede
+http://blogs.wsj.com/pharmalot/2015/02/03/should-medicare-negotiate-part-d-drug-prices-take-our-reader-poll/
+INSURER BARGAINING AND NEGOTIATED DRUG PRICES IN MEDICARE PART D
+INSURERS’ NEGOTIATING LEVERAGE AND THE EXTERNAL EFFECTS OF MEDICARE PART D
+
+Pharmaceutical research and development: what do we get for all that money?
+
+Demythologizing the high costs of pharmaceutical research
